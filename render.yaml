@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: mi-bot-iol-cedears
+    env: node
+    buildCommand: npm run build
+    startCommand: node server.js
+    healthCheckPath: /api/bot/status
