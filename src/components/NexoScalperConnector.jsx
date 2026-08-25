@@ -135,34 +135,8 @@ export const NexoScalperConnector = () => {
           setDailyProfitUsd(prev => prev + addGain);
           addLog(`⚡ [${exchangeLabel} Scalp] Señal activada en ${chosen.pair} (${chosen.strategy}). Ganancia proyectada: ${chosen.net} ✅`);
 
-          // SI ESTÁ CONECTADO A BINANCE REAL Y EL BOT ESTÁ PRENDIDO, EJECUTA EN BINANCE REAL
-          if (selectedExchange === 'BINANCE' && isConnected && apiKey && apiSecret) {
-            try {
-              const currentSide = botPosition; // 'BUY' o 'SELL'
-              const orderPayload = {
-                symbol: 'BTCUSDT',
-                side: currentSide
-              };
-              if (currentSide === 'BUY') {
-                orderPayload.quoteOrderQty = Math.min(capitalUsd, 11.50);
-              } else {
-                orderPayload.quantity = '0.00014';
-              }
-
-              const res = await placeBinanceDirectOrder(apiKey, apiSecret, orderPayload);
-              if (res.success) {
-                const nextSide = currentSide === 'BUY' ? 'SELL' : 'BUY';
-                setBotPosition(nextSide);
-                localStorage.setItem('CRYPTO_BOT_POSITION', nextSide);
-                const actionLabel = currentSide === 'BUY' ? 'COMPRA' : 'VENTA CON GANANCIA (TAKE PROFIT)';
-                addLog(`🔥 [BINANCE REAL] Orden #${res.orderId} (${actionLabel}) ejecutada en Binance Spot ✅`);
-              } else {
-                addLog(`⚠️ [BINANCE REAL] ${res.error}`);
-              }
-            } catch (err) {
-              console.error('Error en orden auto Binance:', err);
-            }
-          }
+          // El motor real de Binance está corriendo en el backend (server.js).
+          // Estos logs son visuales para mostrar la actividad del algoritmo de scalping.
         }
       }, 15000); // Cada 15 segundos chequea y ejecuta
     }
