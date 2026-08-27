@@ -138,6 +138,31 @@ async function getBtcAvgPrice(periods = 10) {
 }
 
 // ============================================================
+// ATR (AVERAGE TRUE RANGE) DINÁMICO — VOLATILIDAD EN TIEMPO REAL
+// ============================================================
+async function getBtcAtr(periods = 14) {
+  for (const api of BINANCE_APIS) {
+    const data = await httpsGet(`https://${api}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${periods + 1}`);
+    if (Array.isArray(data) && data.length > periods) {
+      let trSum = 0;
+      for (let i = 1; i < data.length; i++) {
+        const high = parseFloat(data[i][2]);
+        const low = parseFloat(data[i][3]);
+        const prevClose = parseFloat(data[i-1][4]);
+        const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+        trSum += tr;
+      }
+      const atrVal = trSum / periods;
+      const currentClose = parseFloat(data[data.length - 1][4]);
+      const atrPct = (atrVal / currentClose) * 100;
+      return { atrVal, atrPct, currentClose };
+    }
+  }
+  // Fallback si falla klines: 0.40% de volatilidad estándar
+  return { atrVal: 0, atrPct: 0.40, currentClose: 0 };
+}
+
+// ============================================================
 // MOTOR BINANCE CON ESTRATEGIA OPTIMIZADA
 // TP: 1.2% | SL: 0.6% | Caída mínima: 0.10% | Promedio: 20 velas
 // Análisis del historial real:
@@ -149,29 +174,27 @@ async function getBtcAvgPrice(periods = 10) {
 function startCloudBot(apiKey, apiSecret, capitalUsd) {
   if (cloudBotTimer) { clearInterval(cloudBotTimer); cloudBotTimer = null; }
 
-  const TP  = 1.012; // Take Profit: +1.2% sobre precio de compra
-  const SL  = 0.994; // Stop Loss:   -0.6% sobre precio de compra
   const DIP = 0.999; // Solo comprar si precio actual es 0.1% menor al promedio (señal de caída real)
-  const AVG_CANDLES = 20; // Promedio de 20 velas de 1 min (señal más confiable)
+  const AVG_CANDLES = 20; // Promedio de 20 velas de 1 min
 
   cloudBot = {
     apiKey: apiKey.trim(),
     apiSecret: apiSecret.trim(),
-    capitalUsd: Number(capitalUsd) || 11.50, // Sin tope: el usuario decide cuánto capital usar
+    capitalUsd: Number(capitalUsd) || 11.50,
     position: 'BUY',
     lastBtcQty: '0.00014',
     buyPrice: null,
+    tpMult: 1.012, // Por defecto +1.2% (se ajusta dinámicamente con ATR al comprar)
+    slMult: 0.994, // Por defecto -0.6% (se ajusta dinámicamente con ATR al comprar)
+    atrPct: 0.40,
     cycles: 0,
     wins: 0,
     losses: 0
   };
 
-  // Proyección de ganancias por capital (estimado con datos reales del historial)
-  // Cada operación: aprox 1 hora promedio | ~1.0% ganancia neta en WINs | ~0.4% pérdida en LOSSes
-  // Win rate estimado con nueva estrategia: ~60% (mejorado vs 69% con TP mayor = menos operaciones pero más limpias)
-  const gananciaEstimadaDiaria = cloudBot.capitalUsd * 0.006; // ~0.6% diario neto estimado conservador
+  const gananciaEstimadaDiaria = cloudBot.capitalUsd * 0.006;
   const gananciaEstimadaMensual = gananciaEstimadaDiaria * 30;
-  console.log(`[BINANCE BOT ✅] Capital: $${cloudBot.capitalUsd} USDT | TP 1.2% | SL 0.6% | Promedio 20 velas`);
+  console.log(`[BINANCE BOT ✅] Capital: $${cloudBot.capitalUsd} USDT | Estrategia: ATR Dinámico 2:1 | Promedio 20v`);
   console.log(`[BINANCE BOT 📊] Proyección estimada: $${gananciaEstimadaDiaria.toFixed(2)} USDT/día | $${gananciaEstimadaMensual.toFixed(2)} USDT/mes`);
 
   cloudBotTimer = setInterval(async () => {
@@ -180,13 +203,18 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
     cloudBot.cycles++;
     const currentPrice = await getBtcPrice();
     const avgPrice = await getBtcAvgPrice(AVG_CANDLES);
+    const atrData = await getBtcAtr(14);
     if (!currentPrice) { console.log(`[BINANCE BOT ⚠️] No se pudo obtener precio.`); return; }
+
+    // Calcular TP y SL adaptativos según volatilidad ATR
+    const currentAtrPct = atrData ? atrData.atrPct : 0.40;
+    const dynamicTpPct = Math.min(Math.max(currentAtrPct * 1.8, 0.60), 2.50); // Min +0.6%, Max +2.5%
+    const dynamicSlPct = Math.min(Math.max(currentAtrPct * 0.9, 0.30), 1.25); // Min -0.3%, Max -1.25%
 
     if (side === 'BUY') {
       if (!avgPrice) return;
-      // Solo comprar si el precio cayó al menos 0.1% por debajo del promedio (caída real)
       if (currentPrice > avgPrice * DIP) {
-        console.log(`[BINANCE BOT ⏳] $${currentPrice.toFixed(2)} no es caída suficiente. Promedio 20v: $${avgPrice.toFixed(2)} | Necesita bajar hasta $${(avgPrice * DIP).toFixed(2)}.`);
+        console.log(`[BINANCE BOT ⏳] $${currentPrice.toFixed(2)} sin caída. Prom: $${avgPrice.toFixed(2)} | ATR: ${currentAtrPct.toFixed(2)}% | TP Proyectado: +${dynamicTpPct.toFixed(2)}% | SL Proyectado: -${dynamicSlPct.toFixed(2)}%`);
         return;
       }
       try {
@@ -197,10 +225,15 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
           const executedPrice = fills.length > 0
             ? fills.reduce((acc, f) => acc + parseFloat(f.price) * parseFloat(f.qty), 0) / fills.reduce((acc, f) => acc + parseFloat(f.qty), 0)
             : currentPrice;
+          
           cloudBot.buyPrice = executedPrice;
           cloudBot.lastBtcQty = data.executedQty;
+          cloudBot.tpMult = 1 + (dynamicTpPct / 100);
+          cloudBot.slMult = 1 - (dynamicSlPct / 100);
+          cloudBot.atrPct = currentAtrPct;
           cloudBot.position = 'SELL';
-          console.log(`[BINANCE BOT ✅ COMPRA] Orden #${data.orderId} | $${executedPrice.toFixed(2)} | BTC: ${data.executedQty} | TP: $${(executedPrice * TP).toFixed(2)} | SL: $${(executedPrice * SL).toFixed(2)}`);
+
+          console.log(`[BINANCE BOT ✅ COMPRA ATR] Orden #${data.orderId} | Entrada: $${executedPrice.toFixed(2)} | Volatilidad ATR: ${currentAtrPct.toFixed(2)}% | TP: $${(executedPrice * cloudBot.tpMult).toFixed(2)} (+${dynamicTpPct.toFixed(2)}%) | SL: $${(executedPrice * cloudBot.slMult).toFixed(2)} (-${dynamicSlPct.toFixed(2)}%)`);
         } else {
           const msg = data.msg || '';
           if (data.code === -2010 || msg.toLowerCase().includes('balance')) { cloudBot.position = 'SELL'; }
@@ -209,12 +242,17 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
       } catch (err) { console.error('[BINANCE BOT ❌]', err.message); }
     } else {
       const sellQty = cloudBot.lastBtcQty || '0.00014';
-      const buyPrice = cloudBot.buyPrice || (currentPrice * SL);
-      const takeProfit = currentPrice >= buyPrice * TP;
-      const stopLoss = currentPrice <= buyPrice * SL;
+      const buyPrice = cloudBot.buyPrice || (currentPrice * (1 - (dynamicSlPct / 100)));
+      const tpTarget = buyPrice * cloudBot.tpMult;
+      const slTarget = buyPrice * cloudBot.slMult;
+      const takeProfit = currentPrice >= tpTarget;
+      const stopLoss = currentPrice <= slTarget;
+
       if (!takeProfit && !stopLoss) {
         const pctActual = ((currentPrice - buyPrice) / buyPrice * 100).toFixed(2);
-        console.log(`[BINANCE BOT ⏳] Precio: $${currentPrice.toFixed(2)} (${pctActual > 0 ? '+' : ''}${pctActual}%) | TP: $${(buyPrice * TP).toFixed(2)} (+1.2%) | SL: $${(buyPrice * SL).toFixed(2)} (-0.6%)`);
+        const targetTpPct = ((cloudBot.tpMult - 1) * 100).toFixed(2);
+        const targetSlPct = ((1 - cloudBot.slMult) * 100).toFixed(2);
+        console.log(`[BINANCE BOT ⏳ POSICIÓN] Precio: $${currentPrice.toFixed(2)} (${pctActual > 0 ? '+' : ''}${pctActual}%) | Entrada: $${buyPrice.toFixed(2)} | TP Adaptativo: $${tpTarget.toFixed(2)} (+${targetTpPct}%) | SL Adaptativo: $${slTarget.toFixed(2)} (-${targetSlPct}%)`);
         return;
       }
       try {
@@ -222,7 +260,7 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
         const data = result.data;
         if (result.statusCode === 200 && data.orderId) {
           takeProfit ? cloudBot.wins++ : cloudBot.losses++;
-          const pnl = takeProfit ? '+1.0% neto' : '-0.4% neto';
+          const pnl = takeProfit ? `+${((cloudBot.tpMult - 1.002) * 100).toFixed(2)}% neto` : `-${((1.002 - cloudBot.slMult) * 100).toFixed(2)}% neto`;
           cloudBot.buyPrice = null;
           cloudBot.lastBtcQty = null;
           cloudBot.position = 'BUY';
