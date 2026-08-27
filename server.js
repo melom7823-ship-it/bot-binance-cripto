@@ -44,16 +44,19 @@ const MAX_HISTORIAL = 4; // puntos de historial para el promedio
 function httpsGet(url) {
   return new Promise((resolve) => {
     const options = {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      timeout: 3000
     };
-    https.get(url, options, (res) => {
+    const req = https.get(url, options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch { resolve(null); }
       });
-    }).on('error', () => resolve(null));
+    });
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
   });
 }
 
