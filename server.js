@@ -114,19 +114,32 @@ function sendBinanceOrder(apiKey, apiSecret, symbol, side, quoteOrderQty, quanti
 }
 
 // ============================================================
-// PRECIO BTC (API PÚBLICA BINANCE CON FALLBACKS)
+// PRECIO BTC (API MULTI-EXCHANGE CON FALLBACKS ANTI-BLOQUEO)
+// Binance -> Bybit -> KuCoin
 // ============================================================
 const BINANCE_APIS = ['api.binance.com', 'api1.binance.com', 'api2.binance.com', 'api3.binance.com'];
 
 async function getBtcPrice() {
+  // 1. Probar clústeres de Binance
   for (const api of BINANCE_APIS) {
     const data = await httpsGet(`https://${api}/api/v3/ticker/price?symbol=BTCUSDT`);
     if (data && data.price) return parseFloat(data.price);
+  }
+  // 2. Fallback: Bybit Spot API
+  const bybitData = await httpsGet('https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT');
+  if (bybitData && bybitData.result && bybitData.result.list && bybitData.result.list[0]) {
+    return parseFloat(bybitData.result.list[0].lastPrice);
+  }
+  // 3. Fallback: KuCoin Spot API
+  const kucoinData = await httpsGet('https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=BTC-USDT');
+  if (kucoinData && kucoinData.data && kucoinData.data.price) {
+    return parseFloat(kucoinData.data.price);
   }
   return null;
 }
 
 async function getBtcAvgPrice(periods = 10) {
+  // 1. Probar clústeres de Binance
   for (const api of BINANCE_APIS) {
     const data = await httpsGet(`https://${api}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${periods}`);
     if (Array.isArray(data) && data.length > 0) {
@@ -134,11 +147,17 @@ async function getBtcAvgPrice(periods = 10) {
       return closes.reduce((a, b) => a + b, 0) / closes.length;
     }
   }
+  // 2. Fallback: Bybit Klines
+  const bybitKlines = await httpsGet(`https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&limit=${periods}`);
+  if (bybitKlines && bybitKlines.result && Array.isArray(bybitKlines.result.list) && bybitKlines.result.list.length > 0) {
+    const closes = bybitKlines.result.list.map(c => parseFloat(c[4]));
+    return closes.reduce((a, b) => a + b, 0) / closes.length;
+  }
   return null;
 }
 
 // ============================================================
-// ATR (AVERAGE TRUE RANGE) DINÁMICO — VOLATILIDAD EN TIEMPO REAL
+// ATR (AVERAGE TRUE RANGE) DINÁMICO CON MULTI-EXCHANGE FALLBACK
 // ============================================================
 async function getBtcAtr(periods = 14) {
   for (const api of BINANCE_APIS) {
@@ -158,7 +177,23 @@ async function getBtcAtr(periods = 14) {
       return { atrVal, atrPct, currentClose };
     }
   }
-  // Fallback si falla klines: 0.40% de volatilidad estándar
+  // Fallback Bybit Klines
+  const bybitKlines = await httpsGet(`https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&limit=${periods + 1}`);
+  if (bybitKlines && bybitKlines.result && Array.isArray(bybitKlines.result.list) && bybitKlines.result.list.length > periods) {
+    const list = bybitKlines.result.list;
+    let trSum = 0;
+    for (let i = 0; i < periods; i++) {
+      const high = parseFloat(list[i][2]);
+      const low = parseFloat(list[i][3]);
+      const prevClose = parseFloat(list[i+1] ? list[i+1][4] : list[i][4]);
+      const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+      trSum += tr;
+    }
+    const atrVal = trSum / periods;
+    const currentClose = parseFloat(list[0][4]);
+    const atrPct = (atrVal / currentClose) * 100;
+    return { atrVal, atrPct, currentClose };
+  }
   return { atrVal: 0, atrPct: 0.40, currentClose: 0 };
 }
 
