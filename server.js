@@ -43,7 +43,10 @@ const MAX_HISTORIAL = 4; // puntos de historial para el promedio
 // ============================================================
 function httpsGet(url) {
   return new Promise((resolve) => {
-    https.get(url, (res) => {
+    const options = {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    };
+    https.get(url, options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
@@ -108,18 +111,27 @@ function sendBinanceOrder(apiKey, apiSecret, symbol, side, quoteOrderQty, quanti
 }
 
 // ============================================================
-// PRECIO BTC (API PÚBLICA BINANCE)
+// PRECIO BTC (API PÚBLICA BINANCE CON FALLBACKS)
 // ============================================================
+const BINANCE_APIS = ['api.binance.com', 'api1.binance.com', 'api2.binance.com', 'api3.binance.com'];
+
 async function getBtcPrice() {
-  const data = await httpsGet('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
-  return data ? parseFloat(data.price) : null;
+  for (const api of BINANCE_APIS) {
+    const data = await httpsGet(`https://${api}/api/v3/ticker/price?symbol=BTCUSDT`);
+    if (data && data.price) return parseFloat(data.price);
+  }
+  return null;
 }
 
 async function getBtcAvgPrice(periods = 10) {
-  const data = await httpsGet(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${periods}`);
-  if (!Array.isArray(data) || data.length === 0) return null;
-  const closes = data.map(c => parseFloat(c[4]));
-  return closes.reduce((a, b) => a + b, 0) / closes.length;
+  for (const api of BINANCE_APIS) {
+    const data = await httpsGet(`https://${api}/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=${periods}`);
+    if (Array.isArray(data) && data.length > 0) {
+      const closes = data.map(c => parseFloat(c[4]));
+      return closes.reduce((a, b) => a + b, 0) / closes.length;
+    }
+  }
+  return null;
 }
 
 // ============================================================
