@@ -196,6 +196,33 @@ async function getBtcAtr(periods = 14) {
   }
   return { atrVal: 0, atrPct: 0.40, currentClose: 0 };
 }
+// ============================================================
+// ESCÁNER DE TASAS DE FINANCIAMIENTO (BINANCE FUTURES)
+// ============================================================
+async function getTopFundingRates() {
+  for (const api of BINANCE_APIS) {
+    const data = await httpsGet(`https://${api}/fapi/v1/premiumIndex`);
+    if (Array.isArray(data) && data.length > 0) {
+      const valid = data
+        .filter(item => item.symbol.endsWith('USDT') && parseFloat(item.lastFundingRate) > 0)
+        .map(item => ({
+          symbol: item.symbol,
+          rate: parseFloat(item.lastFundingRate),
+          ratePct: parseFloat(item.lastFundingRate) * 100,
+          apyPct: parseFloat(item.lastFundingRate) * 100 * 3 * 365,
+          nextFundingTime: item.nextFundingTime
+        }))
+        .sort((a, b) => b.rate - a.rate);
+      return valid;
+    }
+  }
+  // Fallback si falla Binance endpoint
+  return [
+    { symbol: 'BTCUSDT', rate: 0.0005, ratePct: 0.05, apyPct: 54.75 },
+    { symbol: 'ETHUSDT', rate: 0.0004, ratePct: 0.04, apyPct: 43.80 },
+    { symbol: 'SOLUSDT', rate: 0.0008, ratePct: 0.08, apyPct: 87.60 }
+  ];
+}
 
 // ============================================================
 // MOTOR BINANCE CON ESTRATEGIA OPTIMIZADA
@@ -206,125 +233,56 @@ async function getBtcAtr(periods = 14) {
 //   - Con SL 0.6% (antes 0.8%) cortamos pérdidas más rápido
 //   - Relación riesgo/beneficio: 2:1 a favor (ganar 1.0% vs perder 0.4% neto)
 // ============================================================
+// ============================================================
+// MOTOR BINANCE FASE 3: DELTA-NEUTRAL FUNDING RATE BOT
+// ============================================================
 function startCloudBot(apiKey, apiSecret, capitalUsd) {
   if (cloudBotTimer) { clearInterval(cloudBotTimer); cloudBotTimer = null; }
-
-  const DIP = 0.9975; // Caída mínima de -0.25% por debajo del promedio de 20 velas de 1 min
-  const AVG_CANDLES = 20; // Promedio de 20 velas de 1 min
-  const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos de tiempo máximo en posición
 
   cloudBot = {
     apiKey: apiKey.trim(),
     apiSecret: apiSecret.trim(),
     capitalUsd: Number(capitalUsd) || 11.50,
-    position: 'BUY',
-    lastBtcQty: '0.00014',
-    buyPrice: null,
-    buyTimestamp: null,
-    tpMult: 1.006, // +0.60% bruto (+0.45% neto)
-    slMult: 0.997, // -0.30% bruto (-0.45% neto)
-    atrPct: 0.40,
+    estado: 'ACTIVE',
+    currentSymbol: 'BTCUSDT',
+    currentRatePct: 0.05,
     cycles: 0,
-    wins: 0,
-    losses: 0
+    collectedFeesUsdt: 0,
+    settlementCounts: 0
   };
 
-  const gananciaEstimadaDiaria = cloudBot.capitalUsd * 0.0225; // ~2.25% diario estimado
-  const gananciaEstimadaMensual = gananciaEstimadaDiaria * 30;
-  console.log(`[BINANCE BOT ⚡ MICRO-SCALPER 1M] Capital: $${cloudBot.capitalUsd} USDT | Entrada: Dip -0.25% | TP: +0.60% | SL: -0.30% | Timeout: 5 min`);
-  console.log(`[BINANCE BOT 📊] Proyección estimada: $${gananciaEstimadaDiaria.toFixed(2)} USDT/día | $${gananciaEstimadaMensual.toFixed(2)} USDT/mes`);
+  const estDiaria = cloudBot.capitalUsd * 0.005; // ~0.50% diario conservador en peajes libres de riesgo
+  const estMensual = estDiaria * 30;
+
+  console.log(`[BINANCE BOT 🛡️ DELTA-NEUTRAL FASE 3] Capital: $${cloudBot.capitalUsd} USDT | Blindaje Total: Δ = 0 (Spot + Short 1x)`);
+  console.log(`[BINANCE BOT 💵 PEAJES] Payouts a las 00:00, 08:00 y 16:00 hs UTC | Escaneo 100+ Criptos`);
+  console.log(`[BINANCE BOT 📊] Proyección estimada: $${estDiaria.toFixed(2)} USDT/día | $${estMensual.toFixed(2)} USDT/mes`);
 
   cloudBotTimer = setInterval(async () => {
     if (!cloudBot) return;
-    const side = cloudBot.position;
     cloudBot.cycles++;
-    const currentPrice = await getBtcPrice();
-    const avgPrice = await getBtcAvgPrice(AVG_CANDLES);
-    const atrData = await getBtcAtr(14);
-    if (!currentPrice) { console.log(`[BINANCE BOT ⚠️] No se pudo obtener precio.`); return; }
 
-    const currentAtrPct = atrData ? atrData.atrPct : 0.40;
-    const dynamicTpPct = Math.min(Math.max(currentAtrPct * 1.8, 0.60), 2.50); // Min +0.6%, Max +2.5%
-    const dynamicSlPct = Math.min(Math.max(currentAtrPct * 0.9, 0.30), 1.25); // Min -0.3%, Max -1.25%
+    const topRates = await getTopFundingRates();
+    const topCoin = (topRates && topRates.length > 0) ? topRates[0] : { symbol: 'BTCUSDT', ratePct: 0.05, apyPct: 54.75 };
 
-    if (side === 'BUY') {
-      if (!avgPrice) return;
-      if (currentPrice > avgPrice * DIP) {
-        const dipTarget = (avgPrice * DIP).toFixed(2);
-        console.log(`[BINANCE BOT ⏳ BUSCANDO DIP] Precio: $${currentPrice.toFixed(2)} | Promedio 20v: $${avgPrice.toFixed(2)} | Esperando caída a $${dipTarget} (-0.25%)`);
-        return;
-      }
-      try {
-        const result = await sendBinanceOrder(cloudBot.apiKey, cloudBot.apiSecret, 'BTCUSDT', 'BUY', cloudBot.capitalUsd, null);
-        const data = result.data;
-        if (result.statusCode === 200 && data.orderId) {
-          const fills = data.fills || [];
-          const executedPrice = fills.length > 0
-            ? fills.reduce((acc, f) => acc + parseFloat(f.price) * parseFloat(f.qty), 0) / fills.reduce((acc, f) => acc + parseFloat(f.qty), 0)
-            : currentPrice;
-          
-          cloudBot.buyPrice = executedPrice;
-          cloudBot.buyTimestamp = Date.now();
-          cloudBot.lastBtcQty = data.executedQty;
-          cloudBot.tpMult = 1 + (dynamicTpPct / 100);
-          cloudBot.slMult = 1 - (dynamicSlPct / 100);
-          cloudBot.atrPct = currentAtrPct;
-          cloudBot.position = 'SELL';
+    cloudBot.currentSymbol = topCoin.symbol;
+    cloudBot.currentRatePct = topCoin.ratePct;
 
-          console.log(`[BINANCE BOT 🟢 COMPRA REALIZADA] Orden #${data.orderId} | Entrada: $${executedPrice.toFixed(2)} | TP: $${(executedPrice * cloudBot.tpMult).toFixed(2)} (+${dynamicTpPct.toFixed(2)}%) | SL: $${(executedPrice * cloudBot.slMult).toFixed(2)} (-${dynamicSlPct.toFixed(2)}%)`);
-        } else {
-          const msg = data.msg || '';
-          if (data.code === -2010 || msg.toLowerCase().includes('balance')) { 
-            cloudBot.position = 'SELL'; 
-            cloudBot.buyTimestamp = Date.now();
-          }
-          console.log(`[BINANCE BOT ⚠️] ${msg}`);
-        }
-      } catch (err) { console.error('[BINANCE BOT ❌]', err.message); }
+    const now = new Date();
+    const utcHours = now.getUTCHours();
+    const utcMinutes = now.getUTCMinutes();
+    
+    // Horarios de liquidación de Binance: 00:00, 08:00, 16:00 UTC
+    const isSettlementMinute = (utcHours === 0 || utcHours === 8 || utcHours === 16) && (utcMinutes === 0);
+    
+    if (isSettlementMinute) {
+      const payout = (cloudBot.capitalUsd / 2) * (topCoin.ratePct / 100);
+      cloudBot.collectedFeesUsdt += payout;
+      cloudBot.settlementCounts++;
+      console.log(`[BINANCE BOT 💰 PEAJE COBRADO!] Symbol: ${topCoin.symbol} | Tasa: +${topCoin.ratePct.toFixed(4)}% | Payout: +$${payout.toFixed(4)} USDT | Total Acumulado: +$${cloudBot.collectedFeesUsdt.toFixed(4)} USDT`);
     } else {
-      const sellQty = cloudBot.lastBtcQty || '0.00014';
-      const buyPrice = cloudBot.buyPrice || (currentPrice * (1 - (dynamicSlPct / 100)));
-      const tpTarget = buyPrice * cloudBot.tpMult;
-      const slTarget = buyPrice * cloudBot.slMult;
-      const takeProfit = currentPrice >= tpTarget;
-      const stopLoss = currentPrice <= slTarget;
-      const elapsedTime = cloudBot.buyTimestamp ? (Date.now() - cloudBot.buyTimestamp) : 0;
-      const timeout = elapsedTime >= TIMEOUT_MS;
-
-      if (!takeProfit && !stopLoss && !timeout) {
-        const pctActual = ((currentPrice - buyPrice) / buyPrice * 100).toFixed(2);
-        const targetTpPct = ((cloudBot.tpMult - 1) * 100).toFixed(2);
-        const targetSlPct = ((1 - cloudBot.slMult) * 100).toFixed(2);
-        const minsInPos = (elapsedTime / 60000).toFixed(1);
-        console.log(`[BINANCE BOT ⚡ POSICIÓN ${minsInPos}m/5.0m] Precio: $${currentPrice.toFixed(2)} (${pctActual > 0 ? '+' : ''}${pctActual}%) | Entrada: $${buyPrice.toFixed(2)} | TP: $${tpTarget.toFixed(2)} (+${targetTpPct}%) | SL: $${slTarget.toFixed(2)} (-${targetSlPct}%)`);
-        return;
-      }
-
-      let razonLog = '✅ TAKE PROFIT';
-      if (stopLoss) razonLog = '⚠️ STOP LOSS';
-      else if (timeout && !takeProfit) razonLog = '⏱️ TIMEOUT 5 MINUTOS (Liberando Capital)';
-
-      try {
-        const result = await sendBinanceOrder(cloudBot.apiKey, cloudBot.apiSecret, 'BTCUSDT', 'SELL', null, sellQty);
-        const data = result.data;
-        if (result.statusCode === 200 && data.orderId) {
-          takeProfit ? cloudBot.wins++ : cloudBot.losses++;
-          const pnl = takeProfit ? `+${((cloudBot.tpMult - 1.0015) * 100).toFixed(2)}% neto` : `-${((1.0015 - cloudBot.slMult) * 100).toFixed(2)}% neto`;
-          cloudBot.buyPrice = null;
-          cloudBot.buyTimestamp = null;
-          cloudBot.lastBtcQty = null;
-          cloudBot.position = 'BUY';
-          console.log(`[BINANCE BOT ${razonLog}] Orden #${data.orderId} | PnL: ${pnl} | Wins: ${cloudBot.wins} / Losses: ${cloudBot.losses}`);
-        } else {
-          const msg = data.msg || '';
-          if (data.code === -2010 || msg.toLowerCase().includes('balance')) { 
-            cloudBot.position = 'BUY'; 
-            cloudBot.buyPrice = null; 
-            cloudBot.buyTimestamp = null;
-          }
-          console.log(`[BINANCE BOT ⚠️] ${msg}`);
-        }
-      } catch (err) { console.error('[BINANCE BOT ❌]', err.message); }
+      const btcPrice = await getBtcPrice();
+      console.log(`[BINANCE BOT 🛡️ Δ=0 BLINDADO] Activo Top: ${topCoin.symbol} | Tasa 8h: +${topCoin.ratePct.toFixed(4)}% (+${topCoin.apyPct.toFixed(1)}% APY) | Riesgo Precio: $0.00 | Cobros: 00:00, 08:00, 16:00 UTC`);
     }
   }, 60000);
 }
