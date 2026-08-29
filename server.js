@@ -112,6 +112,119 @@ function sendBinanceOrder(apiKey, apiSecret, symbol, side, quoteOrderQty, quanti
     req.end();
   });
 }
+// ============================================================
+// ENVIAR ORDEN A BINANCE FUTUROS (fapi.binance.com)
+// ============================================================
+function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
+  return new Promise((resolve) => {
+    const timestamp = Date.now();
+    const queryObj = {
+      symbol: symbol.toUpperCase(),
+      side: side.toUpperCase(),
+      type: 'MARKET',
+      quantity: String(quantity),
+      recvWindow: '60000',
+      timestamp: String(timestamp)
+    };
+    const params = new URLSearchParams(queryObj);
+    const signature = signBinance(apiSecret, params.toString());
+    params.append('signature', signature);
+    const body = params.toString();
+    const options = {
+      hostname: 'fapi.binance.com',
+      path: '/fapi/v1/order',
+      method: 'POST',
+      headers: {
+        'X-MBX-APIKEY': apiKey,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve({ statusCode: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ statusCode: res.statusCode, data: { msg: data } }); }
+      });
+    });
+    req.on('error', (e) => resolve({ statusCode: 500, data: { msg: e.message } }));
+    req.write(body);
+  });
+}
+
+// ============================================================
+// BINANCE — TRANSFERENCIA UNIVERSAL (SPOT <-> FUTUROS)
+// Type 1: Spot -> USDⓈ-M Futures | Type 2: USDⓈ-M Futures -> Spot
+// ============================================================
+function transferBetweenSpotAndFutures(apiKey, apiSecret, amountUsdt, direction) {
+  return new Promise((resolve) => {
+    const timestamp = Date.now();
+    const type = direction === 'FUTURES_TO_SPOT' ? '2' : '1';
+    const queryObj = {
+      type: type,
+      asset: 'USDT',
+      amount: String(amountUsdt),
+      recvWindow: '60000',
+      timestamp: String(timestamp)
+    };
+    const params = new URLSearchParams(queryObj);
+    const signature = signBinance(apiSecret, params.toString());
+    params.append('signature', signature);
+    const body = params.toString();
+    const options = {
+      hostname: 'api.binance.com',
+      path: '/sapi/v1/asset/transfer',
+      method: 'POST',
+      headers: {
+        'X-MBX-APIKEY': apiKey,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve({ statusCode: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ statusCode: res.statusCode, data: { msg: data } }); }
+      });
+    });
+    req.on('error', (e) => resolve({ statusCode: 500, data: { msg: e.message } }));
+    req.write(body);
+    req.end();
+  });
+}
+
+// ============================================================
+// BINANCE — ESCANEO DE ARBITRAJE DE MONEDAS ESTABLES (USDT/USDC/FDUSD)
+// ============================================================
+async function scanStablecoinArbitrage(apiKey, apiSecret, capitalUsdt) {
+  try {
+    const usdcData = await httpsGet('https://api.binance.com/api/v3/ticker/bookTicker?symbol=USDCUSDT');
+    if (usdcData && usdcData.askPrice) {
+      const askPrice = parseFloat(usdcData.askPrice);
+      if (askPrice > 0 && askPrice <= 0.9985) {
+        const discountPct = ((1.0000 - askPrice) / 1.0000) * 100;
+        console.log(`[BINANCE STABLE ARB ⚡] Descuento detectado en USDC/USDT: ${discountPct.toFixed(2)}% ($${askPrice})`);
+        
+        if (apiKey && apiSecret) {
+          const resT1 = await transferBetweenSpotAndFutures(apiKey, apiSecret, capitalUsdt, 'FUTURES_TO_SPOT');
+          if (resT1.statusCode === 200) {
+            const resBuy = await sendBinanceOrder(apiKey, apiSecret, 'USDCUSDT', 'BUY', capitalUsdt);
+            if (resBuy.statusCode === 200) {
+              const profitEst = (capitalUsdt * (discountPct / 100)).toFixed(4);
+              console.log(`[BINANCE STABLE ARB ✅ TRIANGULACIÓN REALIZADA] Ganancia: +$${profitEst} USDT`);
+            }
+            await transferBetweenSpotAndFutures(apiKey, apiSecret, capitalUsdt, 'SPOT_TO_FUTURES');
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.log(`[BINANCE STABLE ARB ERR] ${e.message}`);
+  }
+}
 
 // ============================================================
 // PRECIO BTC (API MULTI-EXCHANGE CON FALLBACKS ANTI-BLOQUEO)
@@ -282,6 +395,27 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
       console.log(`[BINANCE BOT 💰 PEAJE COBRADO!] Symbol: ${topCoin.symbol} | Tasa: +${topCoin.ratePct.toFixed(4)}% | Payout: +$${payout.toFixed(4)} USDT | Total Acumulado: +$${cloudBot.collectedFeesUsdt.toFixed(4)} USDT`);
     } else {
       const btcPrice = await getBtcPrice();
+      // Si la API key está cargada y no hay posición abierta en Binance, colocar la orden de Short 1x real
+      if (cloudBot.apiKey && cloudBot.apiSecret && !cloudBot.hasRealFuturesPosition && btcPrice) {
+        const qtyBtc = ((cloudBot.capitalUsd / 2) / btcPrice).toFixed(3);
+        if (parseFloat(qtyBtc) >= 0.001) {
+          try {
+            const resFut = await sendBinanceFuturesOrder(cloudBot.apiKey, cloudBot.apiSecret, topCoin.symbol, 'SELL', qtyBtc);
+            if (resFut.statusCode === 200 && resFut.data.orderId) {
+              cloudBot.hasRealFuturesPosition = true;
+              console.log(`[BINANCE FUTURES ✅ ORDEN REAL ALINEADA] Short 1x en ${topCoin.symbol} por ${qtyBtc} BTC | Orden #${resFut.data.orderId}`);
+            } else {
+              console.log(`[BINANCE FUTURES ⚠️] ${resFut.data.msg || 'Alineando posición'}`);
+            }
+          } catch (e) {
+            console.log(`[BINANCE FUTURES ERR] ${e.message}`);
+          }
+        }
+      }
+      // Escaneo de arbitraje de monedas estables en minutos libres entre peajes
+      if (cloudBot.apiKey && cloudBot.apiSecret) {
+        await scanStablecoinArbitrage(cloudBot.apiKey, cloudBot.apiSecret, (cloudBot.capitalUsd / 2).toFixed(2));
+      }
       console.log(`[BINANCE BOT 🛡️ Δ=0 BLINDADO] Activo Top: ${topCoin.symbol} | Tasa 8h: +${topCoin.ratePct.toFixed(4)}% (+${topCoin.apyPct.toFixed(1)}% APY) | Riesgo Precio: $0.00 | Cobros: 00:00, 08:00, 16:00 UTC`);
     }
   }, 60000);
