@@ -871,6 +871,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── KEEP-ALIVE PING (EVITA HIBERNACIÓN DE RENDER) ──
+  if (pathname === '/ping') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('pong');
+    return;
+  }
+
   // ── BINANCE + GENERAL: ESTADO ──
   if (pathname === '/api/bot/status' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -905,4 +912,14 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER ✅] Activo en puerto ${PORT}. Binance + IOL CEDEARs listos.`);
+  // Auto-iniciar el motor Binance 24/7 en la nube inmediatamente al encender el servidor
+  const envApiKey = process.env.BINANCE_API_KEY || '';
+  const envApiSecret = process.env.BINANCE_API_SECRET || '';
+  const envCapitalUsd = parseFloat(process.env.BINANCE_CAPITAL_USD) || 11.50;
+  startCloudBot(envApiKey, envApiSecret, envCapitalUsd);
+
+  // Self-Ping cada 10 minutos para mantener el servidor despierto 24/7 en Render
+  setInterval(() => {
+    httpsGet('https://bot-binance-cripto.onrender.com/ping').catch(() => {});
+  }, 10 * 60 * 1000);
 });
