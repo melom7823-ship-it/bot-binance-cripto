@@ -397,15 +397,20 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
       const btcPrice = await getBtcPrice();
       // Si la API key está cargada y no hay posición abierta en Binance, colocar la orden de Short 1x real
       if (cloudBot.apiKey && cloudBot.apiSecret && !cloudBot.hasRealFuturesPosition && btcPrice) {
-        const qtyBtc = ((cloudBot.capitalUsd / 2) / btcPrice).toFixed(3);
-        if (parseFloat(qtyBtc) >= 0.001) {
+        // En cuentas pequeñas (< $50 USD), priorizar altcoins de alta tasa (ej. DOGE, XRP, ADA) con lote mínimo de 5 USDT
+        const targetSymbol = (cloudBot.capitalUsd < 50 && topCoin.symbol === 'BTCUSDT') ? 'DOGEUSDT' : topCoin.symbol;
+        const targetPrice = targetSymbol === 'BTCUSDT' ? btcPrice : (await httpsGet(`https://api.binance.com/api/v3/ticker/price?symbol=${targetSymbol}`))?.price || 0.10;
+        const rawQty = (cloudBot.capitalUsd / 2) / parseFloat(targetPrice);
+        const qtyStr = targetSymbol === 'BTCUSDT' ? rawQty.toFixed(3) : Math.floor(rawQty).toString();
+
+        if (parseFloat(qtyStr) > 0) {
           try {
-            const resFut = await sendBinanceFuturesOrder(cloudBot.apiKey, cloudBot.apiSecret, topCoin.symbol, 'SELL', qtyBtc);
+            const resFut = await sendBinanceFuturesOrder(cloudBot.apiKey, cloudBot.apiSecret, targetSymbol, 'SELL', qtyStr);
             if (resFut.statusCode === 200 && resFut.data.orderId) {
               cloudBot.hasRealFuturesPosition = true;
-              console.log(`[BINANCE FUTURES ✅ ORDEN REAL ALINEADA] Short 1x en ${topCoin.symbol} por ${qtyBtc} BTC | Orden #${resFut.data.orderId}`);
+              console.log(`[BINANCE FUTURES ✅ ORDEN REAL ALINEADA] Short 1x en ${targetSymbol} por ${qtyStr} | Orden #${resFut.data.orderId}`);
             } else {
-              console.log(`[BINANCE FUTURES ⚠️] ${resFut.data.msg || 'Alineando posición'}`);
+              console.log(`[BINANCE FUTURES ⚠️ RECHAZADO POR BINANCE] ${resFut.data.msg || 'Comprobar permisos API'}`);
             }
           } catch (e) {
             console.log(`[BINANCE FUTURES ERR] ${e.message}`);
