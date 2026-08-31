@@ -880,6 +880,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── DIAGNÓSTICO FUTURES: Testea firma y permisos directamente ──
+  if (pathname === '/api/test-futures' && req.method === 'GET') {
+    const apiKey = (cloudBot?.apiKey || '').trim();
+    const apiSecret = (cloudBot?.apiSecret || '').trim();
+    if (!apiKey || !apiSecret) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Sin claves API cargadas en el motor. Vinculá primero el bot.' }));
+      return;
+    }
+    // Llamar a /fapi/v2/balance (GET) para verificar firma y permisos sin abrir órdenes
+    const ts = Date.now();
+    const qs = `recvWindow=60000&timestamp=${ts}`;
+    const sig = crypto.createHmac('sha256', apiSecret).update(qs).digest('hex');
+    httpsGet(`https://fapi.binance.com/fapi/v2/balance?${qs}&signature=${sig}`, { 'X-MBX-APIKEY': apiKey })
+      .then(data => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, respuesta_binance: data }));
+      })
+      .catch(e => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      });
+    return;
+  }
+
   // ── BINANCE + GENERAL: ESTADO ──
   if (pathname === '/api/bot/status' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
