@@ -391,29 +391,38 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
       cloudBot.settlementCounts++;
       console.log(`[BINANCE BOT 💰 PEAJE COBRADO!] Symbol: ${topCoin.symbol} | Tasa: +${topCoin.ratePct.toFixed(4)}% | Payout: +$${payout.toFixed(4)} USDT | Total Acumulado: +$${cloudBot.collectedFeesUsdt.toFixed(4)} USDT`);
     } else {
-      const btcPrice = await getBtcPrice();
-      // Si la API key está cargada y no hay posición abierta en Binance, colocar la orden de Short 1x real
-      if (cloudBot.apiKey && cloudBot.apiSecret && !cloudBot.hasRealFuturesPosition && btcPrice) {
-        // En cuentas pequeñas (< $50 USD), priorizar altcoins de alta tasa (ej. DOGE, XRP, ADA) con lote mínimo de 5 USDT
-        const targetSymbol = (cloudBot.capitalUsd < 50 && topCoin.symbol === 'BTCUSDT') ? 'DOGEUSDT' : topCoin.symbol;
-        const targetPrice = targetSymbol === 'BTCUSDT' ? btcPrice : (await httpsGet(`https://api.binance.com/api/v3/ticker/price?symbol=${targetSymbol}`))?.price || 0.10;
-        const rawQty = (cloudBot.capitalUsd / 2) / parseFloat(targetPrice);
-        const qtyStr = targetSymbol === 'BTCUSDT' ? rawQty.toFixed(3) : Math.floor(rawQty).toString();
+      // Solo intentar colocar la orden de Futuros cada 5 minutos para no abusar de la API de Binance
+      const shouldRetryFutures = !cloudBot.hasRealFuturesPosition &&
+        (!cloudBot.lastFuturesAttempt || (Date.now() - cloudBot.lastFuturesAttempt) > 5 * 60 * 1000);
 
-        if (parseFloat(qtyStr) > 0) {
-          try {
-            const resFut = await sendBinanceFuturesOrder(cloudBot.apiKey, cloudBot.apiSecret, targetSymbol, 'SELL', qtyStr);
-            if (resFut.statusCode === 200 && resFut.data.orderId) {
-              cloudBot.hasRealFuturesPosition = true;
-              console.log(`[BINANCE FUTURES ✅ ORDEN REAL ALINEADA] Short 1x en ${targetSymbol} por ${qtyStr} | Orden #${resFut.data.orderId}`);
-            } else {
-              console.log(`[BINANCE FUTURES ⚠️ RECHAZADO POR BINANCE] ${resFut.data.msg || 'Comprobar permisos API'}`);
+      if (cloudBot.apiKey && cloudBot.apiSecret && shouldRetryFutures) {
+        cloudBot.lastFuturesAttempt = Date.now();
+        const btcPrice = await getBtcPrice();
+        if (btcPrice) {
+          const targetSymbol = (cloudBot.capitalUsd < 50 && topCoin.symbol === 'BTCUSDT') ? 'DOGEUSDT' : topCoin.symbol;
+          const targetPrice = targetSymbol === 'BTCUSDT' ? btcPrice : parseFloat((await httpsGet(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${targetSymbol}`))?.price || '0.10');
+          const rawQty = (cloudBot.capitalUsd / 2) / targetPrice;
+          const qtyStr = targetSymbol === 'BTCUSDT' ? rawQty.toFixed(3) : Math.floor(rawQty).toString();
+
+          if (parseFloat(qtyStr) > 0) {
+            try {
+              const resFut = await sendBinanceFuturesOrder(cloudBot.apiKey, cloudBot.apiSecret, targetSymbol, 'SELL', qtyStr);
+              if (resFut.statusCode === 200 && resFut.data.orderId) {
+                cloudBot.hasRealFuturesPosition = true;
+                console.log(`[BINANCE FUTURES ✅ ORDEN REAL ALINEADA] Short 1x en ${targetSymbol} por ${qtyStr} | Orden #${resFut.data.orderId}`);
+              } else if (resFut.data.code === -1003) {
+                console.log(`[BINANCE FUTURES 🚫 IP BANEADA] Esperando 15 min antes de reintentar.`);
+                cloudBot.lastFuturesAttempt = Date.now() + 15 * 60 * 1000; // esperar 15 min extra
+              } else {
+                console.log(`[BINANCE FUTURES ⚠️] ${resFut.data.msg || JSON.stringify(resFut.data)}`);
+              }
+            } catch (e) {
+              console.log(`[BINANCE FUTURES ERR] ${e.message}`);
             }
-          } catch (e) {
-            console.log(`[BINANCE FUTURES ERR] ${e.message}`);
           }
         }
       }
+
       // Escaneo de arbitraje de monedas estables en minutos libres entre peajes
       if (cloudBot.apiKey && cloudBot.apiSecret) {
         await scanStablecoinArbitrage(cloudBot.apiKey, cloudBot.apiSecret, (cloudBot.capitalUsd / 2).toFixed(2));
