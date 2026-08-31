@@ -361,9 +361,11 @@ function startCloudBot(apiKey, apiSecret, capitalUsd) {
     settlementCounts: 0
   };
 
-  const estDiaria = cloudBot.capitalUsd * 0.005; // ~0.50% diario conservador en peajes libres de riesgo
+  const estDiaria = cloudBot.capitalUsd * 0.005;
   const estMensual = estDiaria * 30;
 
+  // Log de diagnóstico: primeros 8 chars de la key y 4 del secret para verificar que son correctos
+  console.log(`[BINANCE 🔑 CREDENCIALES] API Key: ${cloudBot.apiKey.substring(0,8)}... | Secret: ${cloudBot.apiSecret.substring(0,4)}... | Largo Key: ${cloudBot.apiKey.length} | Largo Secret: ${cloudBot.apiSecret.length}`);
   console.log(`[BINANCE BOT 🛡️ DELTA-NEUTRAL FASE 3] Capital: $${cloudBot.capitalUsd} USDT | Blindaje Total: Δ = 0 (Spot + Short 1x)`);
   console.log(`[BINANCE BOT 💵 PEAJES] Payouts a las 00:00, 08:00 y 16:00 hs UTC | Escaneo 100+ Criptos`);
   console.log(`[BINANCE BOT 📊] Proyección estimada: $${estDiaria.toFixed(2)} USDT/día | $${estMensual.toFixed(2)} USDT/mes`);
