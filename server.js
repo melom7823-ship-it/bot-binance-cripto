@@ -114,28 +114,23 @@ function sendBinanceOrder(apiKey, apiSecret, symbol, side, quoteOrderQty, quanti
 }
 // ============================================================
 // ENVIAR ORDEN A BINANCE FUTUROS (fapi.binance.com)
+// Query string manual para evitar problemas de encoding con URLSearchParams
 // ============================================================
 function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
   return new Promise((resolve) => {
-    const timestamp = Date.now();
-    const queryObj = {
-      symbol: symbol.toUpperCase(),
-      side: side.toUpperCase(),
-      type: 'MARKET',
-      quantity: String(quantity),
-      recvWindow: '60000',
-      timestamp: String(timestamp)
-    };
-    const params = new URLSearchParams(queryObj);
-    const signature = signBinance(apiSecret.trim(), params.toString());
-    params.append('signature', signature);
-    const body = params.toString();
+    const key = (apiKey || '').trim();
+    const secret = (apiSecret || '').trim();
+    const ts = Date.now();
+    // Construir query string manualmente para control exacto del HMAC
+    const qs = `symbol=${symbol.toUpperCase()}&side=${side.toUpperCase()}&type=MARKET&quantity=${quantity}&recvWindow=60000&timestamp=${ts}`;
+    const sig = crypto.createHmac('sha256', secret).update(qs).digest('hex');
+    const body = `${qs}&signature=${sig}`;
     const options = {
       hostname: 'fapi.binance.com',
       path: '/fapi/v1/order',
       method: 'POST',
       headers: {
-        'X-MBX-APIKEY': apiKey.trim(),
+        'X-MBX-APIKEY': key,
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(body)
       }
@@ -150,7 +145,7 @@ function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
     });
     req.on('error', (e) => resolve({ statusCode: 500, data: { msg: e.message } }));
     req.write(body);
-    req.end(); // ← Este era el bug: faltaba esta línea para finalizar y enviar la petición
+    req.end();
   });
 }
 
