@@ -127,7 +127,7 @@ function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
       timestamp: String(timestamp)
     };
     const params = new URLSearchParams(queryObj);
-    const signature = signBinance(apiSecret, params.toString());
+    const signature = signBinance(apiSecret.trim(), params.toString());
     params.append('signature', signature);
     const body = params.toString();
     const options = {
@@ -135,7 +135,7 @@ function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
       path: '/fapi/v1/order',
       method: 'POST',
       headers: {
-        'X-MBX-APIKEY': apiKey,
+        'X-MBX-APIKEY': apiKey.trim(),
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(body)
       }
@@ -150,8 +150,10 @@ function sendBinanceFuturesOrder(apiKey, apiSecret, symbol, side, quantity) {
     });
     req.on('error', (e) => resolve({ statusCode: 500, data: { msg: e.message } }));
     req.write(body);
+    req.end(); // ← Este era el bug: faltaba esta línea para finalizar y enviar la petición
   });
 }
+
 
 // ============================================================
 // BINANCE — TRANSFERENCIA UNIVERSAL (SPOT <-> FUTUROS)
